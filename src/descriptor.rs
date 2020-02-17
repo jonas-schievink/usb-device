@@ -11,6 +11,8 @@ pub mod descriptor_type {
     pub const STRING: u8 = 3;
     pub const INTERFACE: u8 = 4;
     pub const ENDPOINT: u8 = 5;
+    pub const BOS: u8 = 15;
+    pub const CAPABILITY: u8 = 16;
 }
 
 /// String descriptor language IDs.
@@ -19,6 +21,16 @@ pub mod lang_id {
     ///
     /// Recommended for use as the first language ID for compatibility.
     pub const ENGLISH_US: u16 = 0x0409;
+}
+
+/// Standard capability descriptor types
+#[allow(missing_docs)]
+pub mod capability_type {
+    pub const WIRELESS_USB: u8 = 1;
+    pub const USB_2_0_EXTENSION: u8 = 2;
+    pub const SS_USB_DEVICE: u8 = 3;
+    pub const CONTAINER_ID: u8 = 4;
+    pub const PLATFORM: u8 = 5;
 }
 
 /// A writer for USB descriptors.
@@ -48,7 +60,7 @@ impl DescriptorWriter<'_> {
     pub fn write(&mut self, descriptor_type: u8, descriptor: &[u8]) -> Result<()> {
         let length = descriptor.len();
 
-        if self.position + 2 + length > self.buf.len() {
+        if (self.position + 2 + length) > self.buf.len() || (length + 2) > 255 {
             return Err(UsbError::BufferOverflow);
         }
 
@@ -68,7 +80,7 @@ impl DescriptorWriter<'_> {
         self.write(
             descriptor_type::DEVICE,
             &[
-                0x00, 0x02, // bcdUSB
+                0x10, 0x02, // bcdUSB 2.1
                 config.device_class, // bDeviceClass
                 config.device_sub_class, // bDeviceSubClass
                 config.device_protocol, // bDeviceProtocol
@@ -197,5 +209,70 @@ impl DescriptorWriter<'_> {
         self.position = pos;
 
         Ok(())
+    }
+}
+
+/// A writer for Binary Object Store descriptor.
+pub struct BosWriter<'w, 'a: 'w> {
+    writer: &'w mut DescriptorWriter<'a>,
+    num_caps_mark: Option<usize>,
+}
+
+impl<'w, 'a: 'w> BosWriter<'w, 'a> {
+    pub(crate) fn new(writer: &'w mut DescriptorWriter<'a>) -> Self {
+        Self {
+            writer: writer,
+            num_caps_mark: None,
+        }
+    }
+
+    pub(crate) fn bos(&mut self) -> Result<()> {
+        self.num_caps_mark= Some(self.writer.position + 4);
+        self.writer.write(
+            descriptor_type::BOS,
+            &[
+                0x00, 0x00, // wTotalLength
+                0x00, // bNumDeviceCaps
+            ])?;
+
+        self.capability(capability_type::USB_2_0_EXTENSION, &[0; 4])?;
+
+        Ok(())
+    }
+
+    /// Writes capability descriptor to a BOS
+    ///
+    /// # Arguments
+    ///
+    /// * `capability_type` - Type of a capability
+    /// * `data` - Binary data of the descriptor
+    pub fn capability(&mut self, capability_type: u8, data: &[u8]) -> Result<()> {
+        match self.num_caps_mark{
+            Some(mark) => self.writer.buf[mark] += 1,
+            None => return Err(UsbError::InvalidState),
+        }
+
+        let mut start = self.writer.position;
+        let blen = data.len();
+
+        if (start + blen + 3) > self.writer.buf.len() || (blen + 3) > 255 {
+            return Err(UsbError::BufferOverflow);
+        }
+
+        self.writer.buf[start] = (blen + 3) as u8;
+        self.writer.buf[start+1] = descriptor_type::CAPABILITY;
+        self.writer.buf[start+2] = capability_type;
+
+        start += 3;
+        self.writer.buf[start..start+blen].copy_from_slice(data);
+        self.writer.position = start + blen;
+
+        Ok(())
+    }
+
+    pub(crate) fn end_bos(&mut self) {
+        self.num_caps_mark= None;
+        let position = self.writer.position as u16;
+        self.writer.buf[2..4].copy_from_slice(&position.to_le_bytes());
     }
 }
