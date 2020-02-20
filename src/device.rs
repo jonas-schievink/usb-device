@@ -362,6 +362,11 @@ impl<B: UsbBus> UsbDevice<'_, B> {
                     } else {
                         self.pending_address = req.value as u8;
                     }
+
+                    if B::INHIBIT_SET_ADDRESS_RESPONSE {
+                        return;
+                    }
+
                     xfer.accept().ok();
                 },
 
